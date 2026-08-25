@@ -16,7 +16,7 @@ export interface WeatherHour extends Coordinates {
 export interface WeatherTimeline {
   timezoneOffsetSeconds: number;
   hours: WeatherHour[];
-  source: "live" | "memory-cache" | "database-cache";
+  source: "live" | "fallback" | "memory-cache" | "database-cache";
 }
 
 export interface EventModel {

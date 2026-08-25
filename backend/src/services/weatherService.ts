@@ -23,6 +23,17 @@ interface OpenWeatherForecast {
   list: OpenWeatherForecastItem[];
 }
 
+interface OpenMeteoForecast {
+  utc_offset_seconds: number;
+  hourly: {
+    time: string[];
+    temperature_2m: number[];
+    relative_humidity_2m: number[];
+    precipitation: number[];
+    cloud_cover: number[];
+  };
+}
+
 interface CacheEntry {
   expiresAt: number;
   timeline: WeatherTimeline;
@@ -154,6 +165,41 @@ async function loadDatabaseCache(key: string): Promise<WeatherTimeline | null> {
   };
 }
 
+async function loadOpenMeteoTimeline(coordinates: Coordinates): Promise<WeatherTimeline> {
+  const response = await axios.get<OpenMeteoForecast>("https://api.open-meteo.com/v1/forecast", {
+    timeout: 8_000,
+    params: {
+      latitude: coordinates.lat,
+      longitude: coordinates.lon,
+      hourly: "temperature_2m,relative_humidity_2m,precipitation,cloud_cover",
+      past_days: 2,
+      forecast_days: 4,
+      timezone: "GMT",
+    },
+  });
+
+  const timezoneOffsetSeconds = response.data.utc_offset_seconds ?? 0;
+  const hours = response.data.hourly.time.map((time, index) => {
+    const timestamp = new Date(`${time}Z`);
+    const airTemperatureC = response.data.hourly.temperature_2m[index] ?? 0;
+    return {
+      ...coordinates,
+      timestamp,
+      airTemperatureC,
+      soilSurfaceTemperatureC: estimateSoilSurfaceTemperature(
+        airTemperatureC,
+        timestamp,
+        timezoneOffsetSeconds,
+        response.data.hourly.cloud_cover[index],
+      ),
+      relativeHumidityPct: response.data.hourly.relative_humidity_2m[index] ?? 0,
+      precipitationMm: response.data.hourly.precipitation[index] ?? 0,
+    };
+  });
+
+  return { timezoneOffsetSeconds, hours, source: "fallback" };
+}
+
 export async function getWeatherTimeline(coordinates: Coordinates): Promise<WeatherTimeline> {
   const key = cacheKey(coordinates);
   const cached = memoryCache.get(key);
@@ -218,6 +264,28 @@ export async function getWeatherTimeline(coordinates: Coordinates): Promise<Weat
     ]);
     return timeline;
   } catch (error) {
+    try {
+      const timeline = await loadOpenMeteoTimeline(coordinates);
+      memoryCache.set(key, {
+        expiresAt: Date.now() + env.WEATHER_CACHE_TTL_SECONDS * 1000,
+        timeline,
+      });
+
+      const currentPoint = timeline.hours.reduce((closest, point) =>
+        Math.abs(point.timestamp.getTime() - Date.now()) <
+        Math.abs(closest.timestamp.getTime() - Date.now())
+          ? point
+          : closest,
+      );
+      await Promise.allSettled([
+        persistCurrentObservation(currentPoint),
+        persistTimelineCache(key, timeline),
+      ]);
+      return timeline;
+    } catch {
+      // Continue to the persisted cache if both live providers are unavailable.
+    }
+
     const databaseCache = await loadDatabaseCache(key);
     if (databaseCache) return databaseCache;
     throw error;
