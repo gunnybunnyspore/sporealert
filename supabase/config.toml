@@ -1,0 +1,4 @@
+project_id = "sporealert"
+
+[functions.sporealert]
+verify_jwt = false

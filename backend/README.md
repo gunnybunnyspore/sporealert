@@ -7,10 +7,12 @@ The service is educational environmental software. It does not identify fungi or
 ## Stack
 
 - Node.js 20+, Express, TypeScript
-- PostgreSQL 17 + PostGIS 3.5
+- PostgreSQL + PostGIS
 - OpenWeatherMap current weather and five-day forecast
+- Open-Meteo fallback when a new or unavailable OpenWeather key cannot serve requests
 - OpenStreetMap Nominatim reverse geocoding
 - Twilio SMS and `node-cron`
+- Supabase Edge Function production runtime
 
 ## Run locally
 
@@ -32,6 +34,12 @@ npm start
 ```
 
 ## API
+
+Live API base:
+
+```text
+https://vktgxmqfwxioeyohlmdc.supabase.co/functions/v1/sporealert
+```
 
 ### `GET /api/weather/predict`
 
@@ -58,11 +66,22 @@ curl -X POST http://localhost:4000/api/notify/subscribe \
 
 One process-wide cron task checks active subscriptions every six hours. This is more reliable than creating an in-memory cron task per user and remains safe across restarts.
 
-On a free Render service, idle suspension can pause in-process cron. A production deployment can call `POST /api/notify/sweep` every six hours from Supabase `pg_cron`/`pg_net`, using `Authorization: Bearer <CRON_SECRET>`.
+The production Edge Function exposes the same subscription and sweep routes. Call `POST /api/notify/sweep` every six hours from Supabase `pg_cron`/`pg_net`, using `Authorization: Bearer <CRON_SECRET>`.
 
 ## Production deployment
 
-`../render.yaml` defines the free Render web service and `Dockerfile` builds a non-root production image. Apply `schema.sql` and `seed.sql` to a Supabase PostgreSQL project before deployment, then set the Render environment variables shown in `.env.example`.
+The verified no-card deployment runs from `../supabase/functions/sporealert/index.ts`. The original Express service and Docker image remain available for conventional container deployment. Apply `schema.sql` and `seed.sql`, set Edge Function secrets, then deploy with:
+
+```bash
+supabase functions deploy sporealert --project-ref <project-ref> --no-verify-jwt
+```
+
+Verified on August 25, 2026:
+
+- `GET /health` returned HTTP 200.
+- `GET /health/ready` returned HTTP 200 with a connected database.
+- The Windsor test request returned Northwest Park & Open Space, 4.41 km away, with a nonzero probability score.
+- A sanitized full response is saved in `live-response.json`.
 
 ## Data model and geospatial behavior
 
@@ -79,7 +98,7 @@ Nominatim is used only to reverse-geocode unnamed records. Bulk POI population s
 
 OpenWeatherMap's standard forecast is three-hourly, so the service expands each period into hourly estimates. Every live request stores the current observation. Those observations provide the rolling prior 48-hour rainfall window over time.
 
-If OpenWeatherMap fails, the service first uses its memory cache and then a PostgreSQL cache valid for up to 12 hours. Responses expose `weatherSource` so clients can communicate reduced freshness.
+If OpenWeatherMap fails or a newly issued key is still activating, the service uses Open-Meteo immediately. The Express runtime then falls back to its memory cache and PostgreSQL cache if both providers are unavailable. Responses expose `weatherSource` so clients can communicate provenance and freshness.
 
 ## Event models
 
